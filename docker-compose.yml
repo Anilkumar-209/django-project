@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # mysql 8 database service
+  # stores persistent project data (paragraphs, users, word frequencies, etc.)
+  # port 3307 is used on the host to avoid conflicts with any local mysql installation
+  db:
+    image: mysql:8
+    restart: always
+    environment:
+      MYSQL_DATABASE: codemonk        # database name
+      MYSQL_USER: codemonk_user       # application database user
+      MYSQL_PASSWORD: anil209         # password for mysql_user
+      MYSQL_ROOT_PASSWORD: anil209    # root user password
+    ports:
+      - '3307:3306'                   # host port : container port mapping
+    volumes:
+      - db_data:/var/lib/mysql        # persistent storage for mysql data
+
+  # redis service
+  # used as a message broker and result backend for celery task queue processing
+  redis:
+    image: redis:7
+    restart: always
+    ports:
+      - '6379:6379'                   # default redis port
+
+  # django backend service
+  # runs the web application with database migrations applied on startup
+  backend:
+    build: .
+    command: sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/code                       # mount local code directory into container
+    ports:
+      - '8000:8000'                    # expose django development server
+    depends_on:
+      - db
+      - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=backend.settings
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MYSQL_DATABASE=codemonk
+      - MYSQL_USER=codemonk_user
+      - MYSQL_PASSWORD=anil209
+      - MYSQL_ROOT_PASSWORD=anil209
+
+  # celery worker service
+  # processes background tasks asynchronously using redis as the broker
+  celery:
+    build: .
+    command: celery -A backend worker -l info
+    volumes:
+      - .:/code
+    depends_on:
+      - backend
+      - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=backend.settings
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  # celery beat scheduler service
+  # manages and schedules periodic tasks for the project
+  celery-beat:
+    build: .
+    command: celery -A backend beat -l info
+    volumes:
+      - .:/code
+    depends_on:
+      - backend
+      - redis
+    environment:
+      - DJANGO_SETTINGS_MODULE=backend.settings
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+# volume for persistent database storage
+volumes:
+  db_data:
